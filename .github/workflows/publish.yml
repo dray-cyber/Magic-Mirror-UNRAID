@@ -1,6 +1,8 @@
 name: Test and publish Docker image
 
 on:
+  push:
+    branches: [main]
   pull_request:
   release:
     types: [published]
@@ -8,6 +10,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: publish-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
