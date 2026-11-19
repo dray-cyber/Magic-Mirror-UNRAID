@@ -429,7 +429,7 @@ class Store:
                     if config['routes_enabled'] and config['routes_key']:
                         jobs.append(('commutes','Google Routes',pool.submit(fetch_commutes,config)))
                     for source in config['calendars']:
-                        if source.get('enabled',True):jobs.append(('calendar:'+source['id'],source['name'],pool.submit(fetch_calendar,{**source,'schedule_past_days':config['schedule_past_days']},now,max(7 if config['idrac_enabled','thursday_alert'] else 0,config['days'],config['schedule_future_days']))))
+                        if source.get('enabled',True):jobs.append(('calendar:'+source['id'],source['name'],pool.submit(fetch_calendar,{**source,'schedule_past_days':config['schedule_past_days']},now,max(7 if config['thursday_alert'] else 0,config['days'],config['schedule_future_days']))))
                     if config['zip_code']:jobs.append(('weather','Weather',pool.submit(fetch_weather,config)))
                     if config['email_enabled']:jobs.append(('email','Shipment email',pool.submit(fetch_shipments,config,password)))
                     for account in config['email_accounts']:
@@ -580,4 +580,5 @@ def main():
     except KeyboardInterrupt:pass
     finally:stop.set();server.server_close()
 if __name__=='__main__':main()
+
 
