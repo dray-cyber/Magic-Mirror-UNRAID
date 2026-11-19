@@ -56,5 +56,4 @@ vm.runInContext(source.slice(0,source.indexOf("$('#themeSelect').innerHTML=")),s
 
 require('./test_fan_display.js');
 
-require('./test_scroll_continuity.js');
-
+require('./test_service_health_ui.js');

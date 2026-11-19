@@ -90,3 +90,11 @@ Sensor faults, stopped fans and the configured temperature threshold use the sam
 ## Static styling integrity
 
 The dashboard and pairing screen share app/static/style.css. Regression tests check its format and required selectors. The stylesheet URL revision forces browsers to reload the corrected asset.
+
+## Tailscale and reverse proxies
+
+Pairing accepts Tailscale CGNAT addresses (100.64.0.0/10), private IPv6, .ts.net hostnames and HTTP/HTTPS same-origin requests. Authentication still requires the pairing token; foreign origins are rejected. Open the alternate URL with #token=YOUR_TOKEN, or enter the current token printed in the container log. Browser storage is separate for each origin. Settings → Connections → Additional dashboard URLs accepts explicit HTTP/HTTPS origins for custom domains or proxies that rewrite Host. No forwarded-host headers are trusted implicitly.
+
+## Gmail, Outlook and Teams status
+
+Connections displays public service health and server-side HTTPS reachability, checked every five minutes on a separate worker. Gmail uses the Google Workspace incident feed. Outlook and Teams use the Microsoft 365 broad public-status feed, which does not cover every tenant-specific incident; public status links provide details. Feed errors and checks older than fifteen minutes are shown as unknown. Reachability is not an authenticated account check. Gmail and Outlook mailbox connection indicators use the configured IMAP accounts and their latest connection results; Teams is labeled Account not linked. No email or Teams credentials are sent to vendor status feeds.

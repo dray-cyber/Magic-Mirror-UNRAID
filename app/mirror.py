@@ -23,6 +23,7 @@ import webbrowser
 from portable import export_csv, parse_csv
 from aerospace import fetch_news, daily_trivia
 from idrac import fetch_idrac, fan_approval, decide_fan
+from service_health import fetch_service_health
 import requests
 from services import fetch_calendar, fetch_weather, fetch_shipments, WEATHER_CODES
 
@@ -31,7 +32,7 @@ THEMES=['aurora', 'nebula', 'amber', 'ocean', 'solar', 'lunar', 'forest', 'retro
 PAGES=['daily','school','workshop','calendar']
 WIDGETS=['yearprogress','daylight','mission','schoolcommute','commute','clock','upnext','weather','agenda','assignments','shipments','countdowns','notes','radar','workshop','connections','classes','sensors']
 DEFAULT=dict(version=29,fan_control_enabled=False,fan_min_percent=20,fan_target_c=46,fan_gain=2.5,fan_failsafe_c=75,idrac_enabled=False,idrac_host='',idrac_user='',idrac_password='',theme='lcars',timezone='America/Chicago',hour24=False,seconds=False,days=14,refresh=5,
-    layout_revision=2,layout_theme='lcars',manual_theme_day='',thursday_alert=True,font_base=18,tv_mode=True,routes_enabled=False,routes_key='',school_origin='',school_destination='',commute_origin='',commute_destination='',zip_code='',units='fahrenheit',notes='Make room for a good day.',calendars=[],completed={},
+    dashboard_origins='',layout_revision=2,layout_theme='lcars',manual_theme_day='',thursday_alert=True,font_base=18,tv_mode=True,routes_enabled=False,routes_key='',school_origin='',school_destination='',commute_origin='',commute_destination='',zip_code='',units='fahrenheit',notes='Make room for a good day.',calendars=[],completed={},
     schedule_past_days=0,schedule_future_days=14,schedule_all_day=True,schedule_locations=True,assume_delivered_days=0,email_accounts=[],email_strict=True,email_blocked='',email_enabled=False,email_host='imap.gmail.com',email_user='',email_folder='INBOX',email_days=30,email_limit=100,
     auto_night=True,night_mode='sun',night_start='21:00',night_end='07:00',day_brightness=100,night_brightness=55,
     urgent_red=False,shift_pixels=True,blank_minutes=0,blank_seconds=10,hide_delivered_days=3,
@@ -48,6 +49,9 @@ def safe_url(value):
     return parsed.scheme=='https' and bool(parsed.hostname) and not parsed.username and not parsed.password
 
 def validate(config):
+    if not isinstance(config.get('dashboard_origins',''),str) or len(config.get('dashboard_origins',''))>2000:raise ValueError('Additional dashboard URLs must be text, up to 2000 characters.')
+    for origin in re.split(r'[,\s]+',config.get('dashboard_origins','')):
+        if origin:dashboard_authority(origin)
     for key in ['commute_origin','commute_destination','school_origin','school_destination','routes_key']:
         if not isinstance(config[key],str) or len(config[key])>500:raise ValueError('Use an address shorter than 500 characters.')
     if config['fan_control_enabled'] and not config['idrac_enabled']:raise ValueError('Enable iDRAC monitoring before fan control.')
@@ -309,7 +313,7 @@ class Store:
             return dict(fan_approval=pending_fan,config=self.public_config(),now=now.isoformat(),demo=self.demo,busy=self.busy,events=events,schedule_events=agenda,assignments=assignments,
                 weather=weather,alerts=alerts,radar=self.data.get('radar'),shipments=shipments,
                 trivia=daily_trivia(self.data.get('news',[]),now),
-                idrac=copy.deepcopy(self.data.get('idrac')),local_ip=self.local_ip,class_events=class_events,commutes=copy.deepcopy(self.data.get('commutes',{})),error_log=copy.deepcopy(self.error_log),sensors=self.data.get('sensors',[]),connections=copy.deepcopy(self.connections),
+                service_health=copy.deepcopy(self.data.get('service_health',{})),idrac=copy.deepcopy(self.data.get('idrac')),local_ip=self.local_ip,class_events=class_events,commutes=copy.deepcopy(self.data.get('commutes',{})),error_log=copy.deepcopy(self.error_log),sensors=self.data.get('sensors',[]),connections=copy.deepcopy(self.connections),
                 display=display)
 
     def mutate(self,body):
@@ -512,6 +516,37 @@ def fetch_radar(weather):
         return dict(frames=frames,host='https://tilecache.rainviewer.com',latitude=weather['latitude'],longitude=weather['longitude']),None
     except Exception:return None,'Radar unavailable; retry later.'
 
+def dashboard_authority(value):
+    parsed=urlparse(value)
+    if parsed.scheme not in ('http','https') or not parsed.hostname or parsed.username or parsed.password or parsed.path not in ('','/') or parsed.query or parsed.fragment:
+        raise ValueError('Use a full dashboard origin such as https://tower.tailnet.ts.net (no path).')
+    return parsed.hostname.lower().rstrip('.'),parsed.port or (443 if parsed.scheme=='https' else 80)
+
+def trusted_dashboard_host(host):
+    if not host:return False
+    if host=='localhost' or host.endswith('.localhost') or host.endswith('.local') or host.endswith('.ts.net') or re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?',host):return True
+    try:
+        address=ipaddress.ip_address(host)
+        return address.is_loopback or address.is_private or (address.version==4 and address in ipaddress.ip_network('100.64.0.0/10'))
+    except ValueError:return False
+
+def dashboard_request_allowed(host_header,origin,extra_origins=''):
+    try:
+        parsed=urlparse('http://'+host_header)
+        if parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:return False
+        host=parsed.hostname.lower().rstrip('.') if parsed.hostname else ''
+        host_port=parsed.port
+        allowed=[item.strip().rstrip('/') for item in re.split(r'[,\s]+',extra_origins) if item.strip()]
+        configured=[dashboard_authority(item) for item in allowed]
+        if not trusted_dashboard_host(host) and not any(h==host and (host_port is None or p==host_port) for h,p in configured):return False
+        if origin:
+            origin_host,origin_port=dashboard_authority(origin)
+            if origin.rstrip('/') in allowed:return True
+            scheme=urlparse(origin).scheme
+            return origin_host==host and origin_port==(host_port or (443 if scheme=='https' else 80))
+        return True
+    except (ValueError,TypeError,AttributeError):return False
+
 class Server(ThreadingHTTPServer):
     daemon_threads=True
     def __init__(self,address,store):self.store=store;super().__init__(address,Handler)
@@ -524,11 +559,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control','no-store');self.send_header('X-Content-Type-Options','nosniff');self.send_header('Referrer-Policy','strict-origin-when-cross-origin')
         self.send_header('X-Frame-Options','SAMEORIGIN');self.end_headers();self.wfile.write(raw)
     def authorized(self):
-        host=urlparse('http://'+self.headers.get('Host','')).hostname
-        try:valid=host=='localhost' or ipaddress.ip_address(host).is_loopback or ipaddress.ip_address(host).is_private
-        except (ValueError,TypeError):valid=False
-        origin=self.headers.get('Origin')
-        if origin and origin!='http://'+self.headers.get('Host'):valid=False
+        valid=dashboard_request_allowed(self.headers.get('Host',''),self.headers.get('Origin'),self.server.store.config.get('dashboard_origins',''))
         token=self.headers.get('Authorization','').removeprefix('Bearer ')
         return valid and hmac.compare_digest(token,self.server.store.token)
     def do_GET(self):
@@ -585,6 +616,15 @@ def main():
         while not stop.is_set():
             store.refresh();stop.wait(store.config['refresh']*60)
     threading.Thread(target=scheduler,daemon=True).start()
+    def service_monitor():
+        while not stop.is_set():
+            if not store.demo:
+                try:
+                    result=fetch_service_health()
+                    with store.lock:store.data['service_health']=result
+                except Exception:pass
+            stop.wait(300)
+    threading.Thread(target=service_monitor,daemon=True).start()
     def hardware_monitor():
         while not stop.is_set():
             with store.lock:config=copy.deepcopy(store.config);generation=store.generation
