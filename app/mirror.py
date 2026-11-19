@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 import webbrowser
 from portable import export_csv, parse_csv
 from aerospace import fetch_news, daily_trivia
-from idrac import fetch_idrac, restore_automatic
+from idrac import fetch_idrac, restore_automatic, fan_approval, decide_fan
 import requests
 from services import fetch_calendar, fetch_weather, fetch_shipments, WEATHER_CODES
 
@@ -302,15 +302,20 @@ class Store:
             shipments=[s for s in shipments if s.get('stage')!='Delivered' or datetime.fromisoformat(s.get('updated',s.get('date',stamp())))>=cutoff]
             for key,connection in self.connections.items():
                 connection['stale']=bool(connection.get('success') and (now-datetime.fromisoformat(connection['success'])).total_seconds()>(129600 if key=='news' else max(self.config['refresh']*180,900)))
-            return dict(config=self.public_config(),now=now.isoformat(),demo=self.demo,busy=self.busy,events=events,schedule_events=agenda,assignments=assignments,
+            pending_fan=fan_approval()
+            display=effective_display(self.config,weather,alerts,assignment_summary(events,self.config['completed'],now),now)
+            if pending_fan:display.update(theme='red-alert',reason='Fan speed approval required')
+            return dict(fan_approval=pending_fan,config=self.public_config(),now=now.isoformat(),demo=self.demo,busy=self.busy,events=events,schedule_events=agenda,assignments=assignments,
                 weather=weather,alerts=alerts,radar=self.data.get('radar'),shipments=shipments,
                 trivia=daily_trivia(self.data.get('news',[]),now),
                 idrac=copy.deepcopy(self.data.get('idrac')),local_ip=self.local_ip,class_events=class_events,commutes=copy.deepcopy(self.data.get('commutes',{})),error_log=copy.deepcopy(self.error_log),sensors=self.data.get('sensors',[]),connections=copy.deepcopy(self.connections),
-                display=effective_display(self.config,weather,alerts,assignment_summary(events,self.config['completed'],now),now))
+                display=display)
 
     def mutate(self,body):
         with self.lock:
             action=body.get('action');new=copy.deepcopy(self.config)
+            if action=='fan_approval':
+                decide_fan(body.get('request_id'),body.get('approve'));return
             if action=='import_csv':
                 self.import_backup(body.get('csv',''));return
             if action=='settings':
@@ -598,6 +603,7 @@ def main():
         except Exception:print('WARNING: Could not restore automatic cooling. Check iDRAC.',flush=True)
         server.server_close()
 if __name__=='__main__':main()
+
 
 
 

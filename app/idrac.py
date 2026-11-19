@@ -5,6 +5,8 @@ import shutil
 import subprocess
 import math
 import threading
+import secrets
+import copy
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime,timezone
 
@@ -66,6 +68,23 @@ def _fetch_idrac(config):
 
 _control_lock=threading.RLock()
 _controlled=None
+_last_percent=None
+_pending=None
+_approved=50
+_denied=False
+_fingerprint=None
+
+def fan_approval():
+    with _control_lock:return copy.deepcopy(_pending)
+
+def decide_fan(request_id,approve):
+    global _pending,_approved,_denied
+    with _control_lock:
+        if not _pending or _pending['id']!=request_id:raise ValueError('Fan approval request changed; refresh and retry.')
+        if type(approve) is not bool:raise ValueError('Invalid fan approval decision.')
+        if approve:_approved=_pending['percent'];_denied=False
+        else:_approved=50;_denied=True
+        _pending=None
 
 def command(config,args):
     binary=shutil.which('ipmitool') or shutil.which('ipmitool.exe')
@@ -74,11 +93,11 @@ def command(config,args):
     return subprocess.run([binary,'-I','lanplus','-H',config['idrac_host'],'-U',config['idrac_user'],'-E','-N','3','-R','1']+args,env=env,shell=False,capture_output=True,text=True,timeout=8,check=True)
 
 def restore_automatic():
-    global _controlled
+    global _controlled,_last_percent
     with _control_lock:
         if _controlled is not None:
             command(_controlled,['raw','0x30','0x30','0x01','0x01'])
-            _controlled=None
+            _controlled=None;_last_percent=None
 
 def fan_target(config,temperatures):
     maximum=max(temperatures)
@@ -87,10 +106,14 @@ def fan_target(config,temperatures):
     return min(100,max(config['fan_min_percent'],round(value)))
 
 def apply_control(config,temperatures,fans):
-    global _controlled
+    global _controlled,_last_percent,_pending,_approved,_denied,_fingerprint
     with _control_lock:
+        fingerprint=tuple(config.get(k) for k in ['idrac_host','idrac_user','idrac_password','fan_min_percent','fan_target_c','fan_gain','fan_failsafe_c'])
+        if fingerprint!=_fingerprint:
+            _pending=None;_approved=50;_denied=False;_fingerprint=fingerprint
         if _controlled is not None and any(config[k]!=_controlled[k] for k in ['idrac_host','idrac_user','idrac_password']):restore_automatic()
         if not config.get('fan_control_enabled'):
+            _pending=None;_approved=50;_denied=False
             try:restore_automatic()
             except Exception:return {'mode':'error','message':'Could not restore automatic cooling'}
             return {'mode':'automatic','message':'Manual fan control is disabled. Enable it in Settings → iDRAC to calculate and command fan percent.'}
@@ -99,15 +122,27 @@ def apply_control(config,temperatures,fans):
         if target is None:
             try:
                 # Request auto even after a restart, when previous manual ownership is unknown.
-                command(config,['raw','0x30','0x30','0x01','0x01']);_controlled=None
+                command(config,['raw','0x30','0x30','0x01','0x01']);_controlled=None;_last_percent=None
                 return {'mode':'automatic','message':'Automatic cooling: '+('CPU readings unavailable' if not valid else 'fan readings unavailable or stopped' if not fans or any(f['value']<=0 for f in fans) else 'temperature safety limit reached')}
             except Exception:return {'mode':'error','message':'Automatic cooling restoration failed; check server cooling immediately'}
+        requested=target
+        if target<=50:
+            _approved=50;_denied=False
+        elif target>_approved:
+            if not _denied and _pending is None:
+                _pending={'id':secrets.token_hex(8),'percent':target,'cpu_c':max(valid)}
+            target=50
         try:
             # Retain target credentials before the first write so failure recovery can restore auto.
+            entering=_controlled is None
             _controlled=dict(config)
-            command(config,['raw','0x30','0x30','0x01','0x00'])
-            command(config,['raw','0x30','0x30','0x02','0xff',hex(target)])
-            return {'mode':'manual','percent':target}
+            if entering:command(config,['raw','0x30','0x30','0x01','0x00'])
+            if entering or _last_percent!=target:command(config,['raw','0x30','0x30','0x02','0xff',hex(target)])
+            _last_percent=target
+            result={'mode':'manual','percent':target,'requested_percent':requested}
+            if _pending:result['message']='Fan increase awaiting approval; manual speed limited to 50%.'
+            elif _denied and requested>50:result['message']='Fan increase denied; manual speed limited to 50%.'
+            return result
         except Exception:
             try:restore_automatic()
             except Exception:return {'mode':'error','message':'Fan command and automatic restoration failed; check server cooling immediately'}
@@ -116,4 +151,5 @@ def apply_control(config,temperatures,fans):
 def fetch_idrac(config):
     with _control_lock:
         return _fetch_idrac(config)
+
 

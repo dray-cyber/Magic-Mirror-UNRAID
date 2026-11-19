@@ -74,3 +74,35 @@ class FanControlTests(unittest.TestCase):
   idrac._controlled=dict(DEFAULT)
   with patch('idrac.command') as cmd:
    self.assertEqual(idrac.apply_control(DEFAULT,[],[])['mode'],'automatic');cmd.assert_called_once()
+
+
+class FanApprovalTests(unittest.TestCase):
+ def setUp(self):
+  import idrac
+  idrac._controlled=None;idrac._last_percent=None;idrac._pending=None;idrac._approved=50;idrac._denied=False;idrac._fingerprint=None
+  self.config={**DEFAULT,'fan_control_enabled':True,'idrac_host':'192.168.1.10','idrac_user':'monitor','idrac_password':'SECRET'}
+ def tearDown(self):self.setUp()
+ def test_hold_approve_and_higher_request(self):
+  import idrac
+  with patch('idrac.command') as command:
+   result=idrac.apply_control(self.config,[{'celsius':60}],[{'value':4200}])
+   self.assertEqual(result['percent'],50);request=idrac.fan_approval();self.assertEqual(request['percent'],55)
+   idrac.decide_fan(request['id'],True)
+   self.assertEqual(idrac.apply_control(self.config,[{'celsius':60}],[{'value':4200}])['percent'],55)
+   result=idrac.apply_control(self.config,[{'celsius':64}],[{'value':4200}]);self.assertEqual(result['percent'],50);self.assertEqual(idrac.fan_approval()['percent'],65)
+ def test_deny_and_no_repeat_commands(self):
+  import idrac
+  with patch('idrac.command') as command:
+   idrac.apply_control(self.config,[{'celsius':60}],[{'value':4200}]);idrac.decide_fan(idrac.fan_approval()['id'],False)
+   before=command.call_count
+   self.assertEqual(idrac.apply_control(self.config,[{'celsius':60}],[{'value':4200}])['percent'],50)
+   self.assertIsNone(idrac.fan_approval());self.assertEqual(command.call_count,before)
+ def test_emergency_auto_not_blocked(self):
+  import idrac
+  with patch('idrac.command') as command:
+   idrac.apply_control(self.config,[{'celsius':60}],[{'value':4200}]);idrac.decide_fan(idrac.fan_approval()['id'],False)
+   self.assertEqual(idrac.apply_control(self.config,[{'celsius':80}],[{'value':4200}])['mode'],'automatic')
+   self.assertEqual(command.call_args.args[1],['raw','0x30','0x30','0x01','0x01'])
+ def test_stale_decision_rejected(self):
+  from idrac import decide_fan
+  with self.assertRaises(ValueError):decide_fan('expired',True)
