@@ -1,4 +1,4 @@
-import unittest,sys,tempfile,json
+import unittest,sys,tempfile,json,time
 from pathlib import Path
 from unittest.mock import patch,MagicMock
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'app'))
@@ -21,6 +21,21 @@ class IdracTests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as tmp:
    s=Store(tmp);s.mutate({'action':'settings','values':{'idrac_enabled':True,'idrac_host':'192.168.1.10','idrac_user':'monitor','idrac_password':'SECRET'}})
    self.assertNotIn('SECRET',json.dumps(s.state()));self.assertIn('SECRET',s.backup());self.assertEqual(Store(tmp).config['idrac_password'],'SECRET')
+ def test_calendar_refresh_with_idrac_disabled(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   store=Store(tmp)
+   store.mutate({'action':'calendar','item':dict(name='Classes',url='https://example.com/calendar.ics',color='#ffffff',enabled=True)})
+   failures=[]
+   with patch('mirror.fetch_news',return_value=([],None)),patch('mirror.fetch_calendar',return_value=([],None)) as fetch,patch('threading.excepthook',side_effect=lambda error:failures.append(error)):
+    store.refresh()
+    for _ in range(200):
+     if not store.busy:break
+     time.sleep(.01)
+    self.assertFalse(store.busy);self.assertEqual(failures,[])
+    fetch.assert_called_once()
+    key='calendar:'+store.config['calendars'][0]['id']
+    self.assertIsNone(store.connections[key]['error'])
  def test_missing_tool(self):
   with patch('idrac.shutil.which',return_value=None):self.assertIn('unavailable',fetch_idrac({**DEFAULT,'idrac_enabled':True})[1])
 if __name__=='__main__':unittest.main()
+
