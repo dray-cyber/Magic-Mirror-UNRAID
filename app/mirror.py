@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 import webbrowser
 from portable import export_csv, parse_csv
 from aerospace import fetch_news, daily_trivia
+from idrac import fetch_idrac
 import requests
 from services import fetch_calendar, fetch_weather, fetch_shipments, WEATHER_CODES
 
@@ -29,7 +30,7 @@ ROOT=Path(__file__).resolve().parent
 THEMES=['aurora', 'nebula', 'amber', 'ocean', 'solar', 'lunar', 'forest', 'retro']+['lcars','red-alert','mission-control','expanse','minimal','blueprint','warm-night']
 PAGES=['daily','school','workshop','calendar']
 WIDGETS=['yearprogress','daylight','mission','schoolcommute','commute','clock','upnext','weather','agenda','assignments','shipments','countdowns','notes','radar','workshop','connections','classes','sensors']
-DEFAULT=dict(version=28,theme='lcars',timezone='America/Chicago',hour24=False,seconds=False,days=14,refresh=5,
+DEFAULT=dict(version=29,idrac_enabled=False,idrac_host='',idrac_user='',idrac_password='',theme='lcars',timezone='America/Chicago',hour24=False,seconds=False,days=14,refresh=5,
     layout_revision=2,layout_theme='lcars',thursday_alert=True,font_base=18,tv_mode=True,routes_enabled=False,routes_key='',school_origin='',school_destination='',commute_origin='',commute_destination='',zip_code='',units='fahrenheit',notes='Make room for a good day.',calendars=[],completed={},
     schedule_past_days=0,schedule_future_days=14,schedule_all_day=True,schedule_locations=True,assume_delivered_days=0,email_accounts=[],email_strict=True,email_blocked='',email_enabled=False,email_host='imap.gmail.com',email_user='',email_folder='INBOX',email_days=30,email_limit=100,
     auto_night=True,night_mode='sun',night_start='21:00',night_end='07:00',day_brightness=100,night_brightness=55,
@@ -49,6 +50,12 @@ def safe_url(value):
 def validate(config):
     for key in ['commute_origin','commute_destination','school_origin','school_destination','routes_key']:
         if not isinstance(config[key],str) or len(config[key])>500:raise ValueError('Use an address shorter than 500 characters.')
+    if config['idrac_enabled']:
+        try:ipaddress.ip_address(config['idrac_host'])
+        except ValueError:raise ValueError('Enter a valid iDRAC IP address.')
+        if not config['idrac_user'] or not config['idrac_password']:raise ValueError('Enter the iDRAC username and password.')
+    for key in ['idrac_host','idrac_user','idrac_password']:
+        if not isinstance(config[key],str) or len(config[key])>255 or any(c in config[key] for c in '\r\n'):raise ValueError('Invalid iDRAC setting.')
     if config['theme'] not in THEMES or config['page'] not in PAGES:raise ValueError('Unknown theme or page.')
     if config['preset'] not in ['landscape','portrait','night']:raise ValueError('Unknown layout preset.')
     ZoneInfo(config['timezone'])
@@ -60,7 +67,7 @@ def validate(config):
     for key in ['night_start','night_end']:
         datetime.strptime(config[key],'%H:%M')
     if config['night_mode'] not in ['sun','schedule']:raise ValueError('Invalid night mode.')
-    for key in ['thursday_alert','tv_mode','routes_enabled','schedule_all_day','schedule_locations','hour24','seconds','email_enabled','auto_night','urgent_red','shift_pixels']:
+    for key in ['idrac_enabled','thursday_alert','tv_mode','routes_enabled','schedule_all_day','schedule_locations','hour24','seconds','email_enabled','auto_night','urgent_red','shift_pixels']:
         if type(config[key]) is not bool:raise ValueError(f'{key} must be true or false.')
     if config['email_enabled'] and (not re.fullmatch(r'[\w.-]+',config['email_host']) or not config['email_user'] or '\n' in config['email_folder'] or '\r' in config['email_folder']):raise ValueError('Check the email server, username and folder.')
     if type(config['email_strict']) is not bool or not isinstance(config['email_blocked'],str):raise ValueError('Invalid shipment filters.')
@@ -232,6 +239,7 @@ class Store:
         config=copy.deepcopy(self.config)
         config['calendars']=[{k:v for k,v in cal.items() if k not in ['url','auth_password','auth_token']} for cal in config['calendars']]
         config.pop('routes_key',None)
+        config.pop('idrac_password',None)
         config['email_password_saved']=bool(self.password)
         config['email_accounts']=[{**{k:v for k,v in a.items() if k!='password'},'password_saved':bool(a['password'])} for a in config['email_accounts']]
         config['sensor_file_configured']=bool(config.pop('sensor_file'))
@@ -295,7 +303,7 @@ class Store:
             return dict(config=self.public_config(),now=now.isoformat(),demo=self.demo,busy=self.busy,events=events,schedule_events=agenda,assignments=assignments,
                 weather=weather,alerts=alerts,radar=self.data.get('radar'),shipments=shipments,
                 trivia=daily_trivia(self.data.get('news',[]),now),
-                local_ip=self.local_ip,class_events=class_events,commutes=copy.deepcopy(self.data.get('commutes',{})),error_log=copy.deepcopy(self.error_log),sensors=self.data.get('sensors',[]),connections=copy.deepcopy(self.connections),
+                idrac=copy.deepcopy(self.data.get('idrac')),local_ip=self.local_ip,class_events=class_events,commutes=copy.deepcopy(self.data.get('commutes',{})),error_log=copy.deepcopy(self.error_log),sensors=self.data.get('sensors',[]),connections=copy.deepcopy(self.connections),
                 display=effective_display(self.config,weather,alerts,assignment_summary(events,self.config['completed'],now),now))
 
     def mutate(self,body):
@@ -306,9 +314,10 @@ class Store:
             if action=='settings':
                 allowed=set(DEFAULT)-{'version','email_accounts','calendars','completed','countdowns','classes','workshop','manual_shipments','sensors','layouts','hidden'}
                 values=body.get('values',{})
-                if set(values)-allowed-{'email_password','clear_email_password'}:raise ValueError('Unknown setting.')
+                if set(values)-allowed-{'email_password','clear_email_password','clear_idrac_password'}:raise ValueError('Unknown setting.')
                 for key,value in values.items():
                     if key in allowed:new[key]=value
+                if values.get('clear_idrac_password'):new['idrac_password']=''
                 if 'theme' in values and values['theme']!=self.config['theme']:
                     new['auto_night']=False;new['urgent_red']=False
             elif action=='email_account':
@@ -373,6 +382,7 @@ class Store:
                 self.generation+=1
                 if action=='settings':
                     changed=body['values']
+                    if any(k.startswith('idrac_') for k in changed):self.data.pop('idrac',None);self.connections.pop('idrac',None)
                     if any(k in changed for k in ['zip_code','units']):
                         for key in ['weather','alerts','radar']:self.data.pop(key,None);self.connections.pop(key,None)
                     if any(k.startswith('email_') for k in changed):self.data.pop('email',None);self.connections.pop('email',None)
@@ -386,7 +396,7 @@ class Store:
     def log_error(self,source,message):
         with self.lock:
             text=str(message)
-            secrets_to_hide=[self.password,self.token,self.config['routes_key']]+[a['password'] for a in self.config['email_accounts']]+[c.get(k,'') for c in self.config['calendars'] for k in ['url','auth_password','auth_token']]
+            secrets_to_hide=[self.password,self.token,self.config['routes_key'],self.config['idrac_password']]+[a['password'] for a in self.config['email_accounts']]+[c.get(k,'') for c in self.config['calendars'] for k in ['url','auth_password','auth_token']]
             for secret in secrets_to_hide:
                 if secret:text=text.replace(secret,'[private]')
             text=re.sub(r'https?://\S+','[URL]',text)[:400]
@@ -414,11 +424,12 @@ class Store:
             try:
                 jobs=[];now=datetime.now(ZoneInfo(config['timezone']))
                 with ThreadPoolExecutor(max_workers=4) as pool:
+                    if config['idrac_enabled']:jobs.append(('idrac','iDRAC',pool.submit(fetch_idrac,config)))
                     if self.news_day!=now.date().isoformat():jobs.append(('news','Daily aerospace trivia',pool.submit(fetch_news)))
                     if config['routes_enabled'] and config['routes_key']:
                         jobs.append(('commutes','Google Routes',pool.submit(fetch_commutes,config)))
                     for source in config['calendars']:
-                        if source.get('enabled',True):jobs.append(('calendar:'+source['id'],source['name'],pool.submit(fetch_calendar,{**source,'schedule_past_days':config['schedule_past_days']},now,max(7 if config['thursday_alert'] else 0,config['days'],config['schedule_future_days']))))
+                        if source.get('enabled',True):jobs.append(('calendar:'+source['id'],source['name'],pool.submit(fetch_calendar,{**source,'schedule_past_days':config['schedule_past_days']},now,max(7 if config['idrac_enabled','thursday_alert'] else 0,config['days'],config['schedule_future_days']))))
                     if config['zip_code']:jobs.append(('weather','Weather',pool.submit(fetch_weather,config)))
                     if config['email_enabled']:jobs.append(('email','Shipment email',pool.submit(fetch_shipments,config,password)))
                     for account in config['email_accounts']:
@@ -516,7 +527,7 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/credentials':
             if not self.authorized():self.response(401,{'error':'Unauthorized request.'});return
             with self.server.store.lock:
-                self.response(200,{'routes_key':self.server.store.config['routes_key'],'primary':self.server.store.password,'accounts':{a['id']:a['password'] for a in self.server.store.config['email_accounts']},'calendars':{c['id']:{k:c.get(k,'') for k in ['url','auth_password','auth_token']} for c in self.server.store.config['calendars']}})
+                self.response(200,{'idrac_password':self.server.store.config['idrac_password'],'routes_key':self.server.store.config['routes_key'],'primary':self.server.store.password,'accounts':{a['id']:a['password'] for a in self.server.store.config['email_accounts']},'calendars':{c['id']:{k:c.get(k,'') for k in ['url','auth_password','auth_token']} for c in self.server.store.config['calendars']}})
             return
         if path=='/api/backup':
             if not self.authorized():self.response(401,{'error':'Unauthorized request.'});return
@@ -569,3 +580,4 @@ def main():
     except KeyboardInterrupt:pass
     finally:stop.set();server.server_close()
 if __name__=='__main__':main()
+

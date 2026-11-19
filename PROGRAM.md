@@ -61,3 +61,12 @@ Dockerfile builds a Python 3.12 image with a non-root runtime, /config persisten
 On Thursday in the configured dashboard timezone, unfinished assignments due Friday, Saturday or Sunday trigger Red Alert and a pulsing TNG-style count popup. The popup pulses five times, closes after 12 seconds and repeats every eight minutes while active. Acknowledge closes the current popup only. The automatic theme clears when the condition ends. Disable under Settings → Display if desired. Reduced-motion browser preferences suppress pulsing. Calendar fetching includes at least seven upcoming days while enabled. This uses local completion state; it does not query Canvas submission status.
 
 GitHub delivery includes .github/workflows/publish.yml: tests on pull requests, tests plus GHCR publishing for published releases/manual dispatch. See docs/GITHUB_SETUP.md. The archive now contains repository-root files without a wrapper directory.
+
+
+## iDRAC hardware telemetry
+
+Settings → iDRAC configures the management IP, username, password and enable switch. Connection Status includes an iDRAC row. The footer immediately before Sources / Day Mode / Blank Screen shows only cumulative kWh, actual fan readings and CPU temperatures. Unavailable readings display a dash; previous readings are dimmed on connection failure.
+
+app/idrac.py uses read-only `ipmitool -I lanplus` commands: `sdr type temperature`, `sdr type fan`, and `delloem powermonitor`. Commands use argument arrays, no shell interpolation, password via IPMI_PASSWORD/-E, and 12-second timeouts. The Docker image installs ipmitool; non-Docker hosts must install it separately. IPMI-over-LAN must be enabled and UDP 623 reachable from the container. No privileged container or host device mount is needed for network IPMI.
+
+The uploaded script's raw manual fan-control commands and hardcoded credentials are intentionally not included. The dashboard does not set fan speed or disable automatic cooling. A speed percentage calculated by another controller cannot be inferred from RPM; when the hardware exposes RPM only, the footer shows actual RPM. CPU sensors are restricted to processor/CPU names or processor entity 3.x, excluding inlet/exhaust temperatures. Credentials are saved in CSV and revealed only by the authenticated credentials endpoint for Settings. Monitoring follows the existing dashboard refresh interval. Hardware and a real Docker rebuild have not been tested here.

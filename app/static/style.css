@@ -71,3 +71,6 @@ body[data-theme=lunar] .widget{border:0;border-radius:40px;box-shadow:inset 0 0 
 .loop-track[aria-hidden=true] .task,.loop-track[aria-hidden=true] label:has([data-workshop]){pointer-events:auto}.task input{cursor:pointer}
 
 .weekend-alert{position:fixed;z-index:90;top:50%;left:50%;transform:translate(-50%,-50%);width:min(620px,90vw);padding:24px;text-align:center;color:#fff1ef;background:#200707f5;border:3px solid #ff6255;border-radius:45px 8px 45px 8px;box-shadow:0 0 50px #f3343466;font:18px "Segoe UI",sans-serif;animation:redAlertPulse 2.4s ease-in-out 5}.red-alert-label{font-size:48px;letter-spacing:.16em;font-weight:700;color:#ff7968}#weekendAlertCount{font-size:28px;margin:14px}.weekend-alert p{font-size:13px;letter-spacing:.12em}.alert-stripe{height:8px;border-radius:20px;background:repeating-linear-gradient(110deg,#ff6b57 0 24px,#501313 24px 32px);margin:10px 0}.weekend-alert button{background:#ff7968;color:#200707;border:0}@keyframes redAlertPulse{0%,100%{border-color:#ff6255;box-shadow:0 0 15px #f3343433}50%{border-color:#ffb0a5;box-shadow:0 0 55px #f3343488}}@media(prefers-reduced-motion:reduce){.weekend-alert{animation:none}}
+
+
+#idracFooter{margin-left:auto;font-size:11px;white-space:nowrap;color:var(--a);font-variant-numeric:tabular-nums}#idracFooter.telemetry-stale{opacity:.5}footer{gap:12px}
