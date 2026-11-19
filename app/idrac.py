@@ -61,7 +61,7 @@ def _fetch_idrac(config):
     if not temperatures:missing.append('CPU temperatures')
     if not fans:missing.append('fan readings')
     if kwh is None:missing.append('cumulative kWh')
-    return dict(control=control,fan_percent=control.get('percent'),avg_fan_rpm=(sum(f['value'] for f in fans if f['unit']=='RPM')/len([f for f in fans if f['unit']=='RPM'])) if any(f['unit']=='RPM' for f in fans) else None,temperatures=temperatures,fans=fans,kwh=kwh,updated=datetime.now(timezone.utc).isoformat(),warning='Unavailable: '+', '.join(missing) if missing else ''),None
+    return dict(control=control,fan_percent=control.get('percent',sum(f['value'] for f in fans if f['unit']=='%')/len([f for f in fans if f['unit']=='%']) if any(f['unit']=='%' for f in fans) else None),avg_fan_rpm=(sum(f['value'] for f in fans if f['unit']=='RPM')/len([f for f in fans if f['unit']=='RPM'])) if any(f['unit']=='RPM' for f in fans) else None,temperatures=temperatures,fans=fans,kwh=kwh,updated=datetime.now(timezone.utc).isoformat(),warning='Unavailable: '+', '.join(missing) if missing else ''),None
 
 
 _control_lock=threading.RLock()
@@ -93,14 +93,14 @@ def apply_control(config,temperatures,fans):
         if not config.get('fan_control_enabled'):
             try:restore_automatic()
             except Exception:return {'mode':'error','message':'Could not restore automatic cooling'}
-            return {'mode':'automatic'}
+            return {'mode':'automatic','message':'Manual fan control is disabled. Enable it in Settings → iDRAC to calculate and command fan percent.'}
         valid=[t['celsius'] for t in temperatures]
         target=fan_target(config,valid) if valid and fans and all(f['value']>0 for f in fans) else None
         if target is None:
             try:
                 # Request auto even after a restart, when previous manual ownership is unknown.
                 command(config,['raw','0x30','0x30','0x01','0x01']);_controlled=None
-                return {'mode':'automatic','message':'Automatic cooling: sensor failure, stopped fan or temperature limit'}
+                return {'mode':'automatic','message':'Automatic cooling: '+('CPU readings unavailable' if not valid else 'fan readings unavailable or stopped' if not fans or any(f['value']<=0 for f in fans) else 'temperature safety limit reached')}
             except Exception:return {'mode':'error','message':'Automatic cooling restoration failed; check server cooling immediately'}
         try:
             # Retain target credentials before the first write so failure recovery can restore auto.
@@ -116,3 +116,4 @@ def apply_control(config,temperatures,fans):
 def fetch_idrac(config):
     with _control_lock:
         return _fetch_idrac(config)
+

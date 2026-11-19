@@ -52,3 +52,6 @@ vm.runInContext(source.slice(0,source.indexOf("$('#themeSelect').innerHTML=")),s
  console.log('Zoom geometry at 45%, 50%, 67%, 80%, 100%, 110%, 125% passed');
  console.log('4 frontend polling/render regression checks passed');
 })().catch(e=>{console.error(e);process.exitCode=1});
+
+
+require('./test_fan_display.js');
