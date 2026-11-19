@@ -103,6 +103,15 @@ class FanApprovalTests(unittest.TestCase):
    idrac.apply_control(self.config,[{'celsius':60}],[{'value':4200}]);idrac.decide_fan(idrac.fan_approval()['id'],False)
    self.assertEqual(idrac.apply_control(self.config,[{'celsius':80}],[{'value':4200}])['mode'],'automatic')
    self.assertEqual(command.call_args.args[1],['raw','0x30','0x30','0x01','0x01'])
+ def test_manual_mode_enabled_once_across_speed_changes(self):
+  import idrac
+  with patch('idrac.command') as command:
+   idrac.apply_control(self.config,[{'celsius':48}],[{'value':4200}])
+   idrac.apply_control(self.config,[{'celsius':50}],[{'value':4300}])
+   idrac.apply_control(self.config,[{'celsius':50}],[{'value':4300}])
+   commands=[call.args[1] for call in command.call_args_list]
+   self.assertEqual(commands.count(['raw','0x30','0x30','0x01','0x00']),1)
+   self.assertEqual(len(commands),3)
  def test_stale_decision_rejected(self):
   from idrac import decide_fan
   with self.assertRaises(ValueError):decide_fan('expired',True)
