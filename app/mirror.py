@@ -31,7 +31,7 @@ THEMES=['aurora', 'nebula', 'amber', 'ocean', 'solar', 'lunar', 'forest', 'retro
 PAGES=['daily','school','workshop','calendar']
 WIDGETS=['yearprogress','daylight','mission','schoolcommute','commute','clock','upnext','weather','agenda','assignments','shipments','countdowns','notes','radar','workshop','connections','classes','sensors']
 DEFAULT=dict(version=29,fan_control_enabled=False,fan_min_percent=20,fan_target_c=46,fan_gain=2.5,fan_failsafe_c=75,idrac_enabled=False,idrac_host='',idrac_user='',idrac_password='',theme='lcars',timezone='America/Chicago',hour24=False,seconds=False,days=14,refresh=5,
-    layout_revision=2,layout_theme='lcars',thursday_alert=True,font_base=18,tv_mode=True,routes_enabled=False,routes_key='',school_origin='',school_destination='',commute_origin='',commute_destination='',zip_code='',units='fahrenheit',notes='Make room for a good day.',calendars=[],completed={},
+    layout_revision=2,layout_theme='lcars',manual_theme_day='',thursday_alert=True,font_base=18,tv_mode=True,routes_enabled=False,routes_key='',school_origin='',school_destination='',commute_origin='',commute_destination='',zip_code='',units='fahrenheit',notes='Make room for a good day.',calendars=[],completed={},
     schedule_past_days=0,schedule_future_days=14,schedule_all_day=True,schedule_locations=True,assume_delivered_days=0,email_accounts=[],email_strict=True,email_blocked='',email_enabled=False,email_host='imap.gmail.com',email_user='',email_folder='INBOX',email_days=30,email_limit=100,
     auto_night=True,night_mode='sun',night_start='21:00',night_end='07:00',day_brightness=100,night_brightness=55,
     urgent_red=False,shift_pixels=True,blank_minutes=0,blank_seconds=10,hide_delivered_days=3,
@@ -160,8 +160,9 @@ def effective_display(config,weather,alerts,assignments,now):
     if config.get('thursday_alert',True) and now.weekday()==3:
         friday=now.date()+timedelta(days=1);sunday=friday+timedelta(days=2)
         weekend=[a for a in assignments if not a.get('done') and friday<=datetime.fromisoformat(a['start']).astimezone(now.tzinfo).date()<=sunday]
-    theme='red-alert' if weekend else 'red-alert' if config['urgent_red'] and urgent else 'warm-night' if night else config['theme']
-    return dict(weekend_count=len(weekend),weekend_day=now.date().isoformat(),theme=theme,night=night,brightness=config['night_brightness'] if night else config['day_brightness'],reason='Thursday weekend assignment alert' if weekend else 'Urgent reminder / alert' if theme=='red-alert' and config['urgent_red'] and urgent else reason)
+    manually_selected=config.get('manual_theme_day')==now.date().isoformat()
+    theme=config['theme'] if manually_selected else 'red-alert' if weekend else 'red-alert' if config['urgent_red'] and urgent else 'warm-night' if night else config['theme']
+    return dict(weekend_count=len(weekend),weekend_day=now.date().isoformat(),theme=theme,night=night,brightness=config['night_brightness'] if night else config['day_brightness'],reason='Manual theme · alerts remain active' if manually_selected else 'Thursday weekend assignment alert' if weekend else 'Urgent reminder / alert' if theme=='red-alert' and config['urgent_red'] and urgent else reason)
 
 def local_ip():
     try:
@@ -304,7 +305,7 @@ class Store:
                 connection['stale']=bool(connection.get('success') and (now-datetime.fromisoformat(connection['success'])).total_seconds()>(129600 if key=='news' else max(self.config['refresh']*180,900)))
             pending_fan=fan_approval()
             display=effective_display(self.config,weather,alerts,assignment_summary(events,self.config['completed'],now),now)
-            if pending_fan:display.update(theme='red-alert',reason='Fan speed approval required')
+            if pending_fan and self.config.get('manual_theme_day')!=now.date().isoformat():display.update(theme='red-alert',reason='Fan speed approval required')
             return dict(fan_approval=pending_fan,config=self.public_config(),now=now.isoformat(),demo=self.demo,busy=self.busy,events=events,schedule_events=agenda,assignments=assignments,
                 weather=weather,alerts=alerts,radar=self.data.get('radar'),shipments=shipments,
                 trivia=daily_trivia(self.data.get('news',[]),now),
@@ -321,11 +322,12 @@ class Store:
             if action=='settings':
                 allowed=set(DEFAULT)-{'version','email_accounts','calendars','completed','countdowns','classes','workshop','manual_shipments','sensors','layouts','hidden'}
                 values=body.get('values',{})
-                if set(values)-allowed-{'email_password','clear_email_password','clear_idrac_password'}:raise ValueError('Unknown setting.')
+                if set(values)-allowed-{'email_password','clear_email_password','clear_idrac_password','manual_theme'}:raise ValueError('Unknown setting.')
                 for key,value in values.items():
                     if key in allowed:new[key]=value
                 if values.get('clear_idrac_password'):new['idrac_password']=''
-                if 'theme' in values and values['theme']!=self.config['theme']:
+                if 'theme' in values and (values['theme']!=self.config['theme'] or values.get('manual_theme')):
+                    new['manual_theme_day']=datetime.now(ZoneInfo(new['timezone'])).date().isoformat()
                     new['auto_night']=False;new['urgent_red']=False
             elif action=='email_account':
                 item=body['item'];existing=next((a for a in new['email_accounts'] if a['id']==item.get('id')),None)
@@ -603,6 +605,7 @@ def main():
         except Exception:print('WARNING: Could not restore automatic cooling. Check iDRAC.',flush=True)
         server.server_close()
 if __name__=='__main__':main()
+
 
 
 
