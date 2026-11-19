@@ -5,3 +5,5 @@ const html=vm.runInContext(`state={config:{email_accounts:[{id:'g',enabled:true,
 assert.match(html,/Gmail/);assert.match(html,/Outlook/);assert.match(html,/Teams/);assert.match(html,/Mailbox connected/);assert.match(html,/Mailbox disconnected/);assert.match(html,/Account not linked/);assert.match(html,/Service issue reported/);assert.match(html,/Service status unknown/);
 const stale=vm.runInContext(`state.service_health.gmail.checked='2000-01-01T00:00:00Z';renderServiceHealth()`,sandbox);assert.match(stale,/Service status unknown/);
 console.log('Vendor health, stale status and separate account connection indicators passed');
+
+const reconnect=vm.runInContext(`state.config.idrac_enabled=true;state.connections.idrac={waiting:true};state.idrac={control:{mode:'waiting',percent:25,message:'Reconnecting in background; last fan setting retained.'}};renderConnections()`,sandbox);assert.match(reconnect,/Reconnecting · Last command 25%/);assert.doesNotMatch(reconnect,/100%/);

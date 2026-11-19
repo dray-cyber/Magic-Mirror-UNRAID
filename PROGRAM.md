@@ -74,17 +74,17 @@ The uploaded script's raw manual fan-control commands and hardcoded credentials 
 
 ## Temperature-based fan controller update
 
-The dashboard now includes optional Dell OEM manual fan control; enable it explicitly in Settings → iDRAC after disabling any other fan-control script. No hardcoded host or credentials are included. The monitor/control loop runs every 15 seconds independently of web/calendar refresh. Formula: minimum percent plus (maximum CPU temperature minus target, floored at zero) × gain; capped at 100%. Minimum, target, gain and automatic-cooling temperature threshold are configurable. Defaults are 20%, 46°C, 2.5%/°C and 75°C. These defaults are not a hardware-specific cooling guarantee; configure for the server's requirements.
+The dashboard now includes optional Dell OEM manual fan control; enable it explicitly in Settings → iDRAC after disabling any other fan-control script. No hardcoded host or credentials are included. The monitor/control loop runs every 30 seconds independently of web/calendar refresh. Formula: minimum percent plus (maximum CPU temperature minus target, floored at zero) × gain; capped at 100%. Minimum, target, gain and automatic-cooling temperature threshold are configurable. Defaults are 20%, 46°C, 2.5%/°C and 75°C. These defaults are not a hardware-specific cooling guarantee; configure for the server's requirements.
 
 The footer shows cumulative kWh, successfully commanded fan percentage, average measured fan RPM, and CPU temperatures. Automatic mode shows Auto instead of guessing a percentage. The parser reads pipe-separated sensor values after the label, so Fan1 RPM cannot be interpreted as 1 RPM. RPM averaging uses actual RPM sensors only.
 
-On missing CPU/fan readings, a stopped fan or threshold breach, the app retains the existing fan setting and requests authorization for 100%. Pending or denied requests send no fault-recovery speed command. Command failures do not trigger automatic retries at a higher speed. Updates, shutdowns, disabling monitoring and changing the target host do not send automatic-mode handoffs. Fan speeds above 50% always require user authorization; cooling faults have no exception. Server hardware protection is managed independently of this application.
+Missing CPU/fan readings or failed IPMI writes quietly pause fan commands and retain the last setting. The app clears pending fan popups and retries telemetry every 30 seconds. There is no disconnection-triggered 100% request, automatic-mode handoff, Red Alert or error-log flag. Once readings return, normal calculation resumes on the same 30-second cadence. A positively reported stopped fan or high-temperature threshold remains a fault requiring user authorization above 50%.
 
 ## Approval for manual fan increases above 50%
 
 Manual targets above 50% create a latched Red Alert and an Approve/Deny popup. Until approved, manual commands are capped at 50%. Approval permits up to the requested percent; a higher target needs another approval. Deny keeps a 50% manual ceiling during the current high-demand episode. Once the calculated target falls to 50% or below, a future high-demand episode can ask again. Pending alerts remain until decided; host/control-setting changes reset approval state. Decisions are session memory and reset after restart.
 
-Sensor faults, stopped fans and the configured temperature threshold use the same approval requirement. Only an approved 100% request permits that fault response; no automatic-mode handoff is sent. The last setting is retained while awaiting a decision or after denial. Hardware commands are tested with mocks only.
+A reported stopped fan or configured temperature threshold uses the approval requirement; missing readings and communication loss only wait for reconnection. No automatic-mode handoff is sent. The last setting remains while disconnected. Hardware commands are tested with mocks only.
 
 
 ## Static styling integrity
@@ -98,3 +98,7 @@ Pairing accepts Tailscale CGNAT addresses (100.64.0.0/10), private IPv6, .ts.net
 ## Gmail, Outlook and Teams status
 
 Connections displays public service health and server-side HTTPS reachability, checked every five minutes on a separate worker. Gmail uses the Google Workspace incident feed. Outlook and Teams use the Microsoft 365 broad public-status feed, which does not cover every tenant-specific incident; public status links provide details. Feed errors and checks older than fifteen minutes are shown as unknown. Reachability is not an authenticated account check. Gmail and Outlook mailbox connection indicators use the configured IMAP accounts and their latest connection results; Teams is labeled Account not linked. No email or Teams credentials are sent to vendor status feeds.
+
+## Quiet fan reconnection
+
+Settings → Connections shows Reconnecting and the last commanded percentage during connection loss. Cached readings remain available, with no disconnection alarm or stale-connection attention flag. The background monitor retries every 30 seconds and resumes normal fan control after readings return. If the process has never commanded a speed, the previous controller setting is left untouched and its percentage is shown as unknown.

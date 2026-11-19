@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 import webbrowser
 from portable import export_csv, parse_csv
 from aerospace import fetch_news, daily_trivia
-from idrac import fetch_idrac, fan_approval, decide_fan
+from idrac import fetch_idrac, fan_approval, decide_fan, connection_wait
 from service_health import fetch_service_health
 import requests
 from services import fetch_calendar, fetch_weather, fetch_shipments, WEATHER_CODES
@@ -306,7 +306,7 @@ class Store:
             cutoff=now-timedelta(days=self.config['hide_delivered_days'])
             shipments=[s for s in shipments if s.get('stage')!='Delivered' or datetime.fromisoformat(s.get('updated',s.get('date',stamp())))>=cutoff]
             for key,connection in self.connections.items():
-                connection['stale']=bool(connection.get('success') and (now-datetime.fromisoformat(connection['success'])).total_seconds()>(129600 if key=='news' else max(self.config['refresh']*180,900)))
+                connection['stale']=bool(not connection.get('waiting') and connection.get('success') and (now-datetime.fromisoformat(connection['success'])).total_seconds()>(129600 if key=='news' else max(self.config['refresh']*180,900)))
             pending_fan=fan_approval()
             display=effective_display(self.config,weather,alerts,assignment_summary(events,self.config['completed'],now),now)
             if pending_fan and self.config.get('manual_theme_day')!=now.date().isoformat():display.update(theme='red-alert',reason='Fan speed approval required')
@@ -419,6 +419,13 @@ class Store:
 
     def record(self,key,label,result):
         data,error=result
+        if key=='idrac' and data and data.get('control',{}).get('mode')=='waiting':
+            previous=copy.deepcopy(self.data.get(key) or {})
+            previous['control']=data['control']
+            if 'percent' in data['control']:previous['fan_percent']=data['control']['percent']
+            self.data[key]=previous
+            self.connections[key]=dict(label=label,attempt=stamp(),success=self.connections.get(key,{}).get('success'),error=None,waiting=True)
+            return
         if error and self.connections.get(key,{}).get('error')!=error:self.log_error(label,error)
         self.connections[key]=dict(label=label,attempt=stamp(),success=self.connections.get(key,{}).get('success'),error=error)
         if not error:
@@ -627,15 +634,16 @@ def main():
     threading.Thread(target=service_monitor,daemon=True).start()
     def hardware_monitor():
         while not stop.is_set():
+            started=time.monotonic()
             with store.lock:config=copy.deepcopy(store.config);generation=store.generation
             if not store.demo:
                 try:result=fetch_idrac(config)
-                except Exception:result=(None,'iDRAC monitor failed; fan setting retained, check server cooling')
+                except Exception:result=({'control':connection_wait()},None)
                 with store.lock:
                     if generation==store.generation and config['idrac_enabled']:
                         store.record('idrac','iDRAC',result)
-                        if result[0] and result[0].get('control',{}).get('message'):store.log_error('iDRAC cooling',result[0]['control']['message'])
-            stop.wait(15)
+                        if result[0] and result[0].get('control',{}).get('mode')!='waiting' and result[0].get('control',{}).get('message'):store.log_error('iDRAC cooling',result[0]['control']['message'])
+            stop.wait(max(0,30-(time.monotonic()-started)))
     threading.Thread(target=hardware_monitor,daemon=True).start()
     try:server.serve_forever()
     except KeyboardInterrupt:pass

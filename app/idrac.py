@@ -58,7 +58,6 @@ def _fetch_idrac(config):
     fans=parse_fans(raw['fans'] or '')
     kwh=parse_energy(raw['energy'] or '')
     control=apply_control(config,temperatures,fans)
-    if not temperatures and not fans and kwh is None:return None,'Cannot read iDRAC telemetry. Check IP, credentials, IPMI-over-LAN and UDP 623 access.'
     missing=[]
     if not temperatures:missing.append('CPU temperatures')
     if not fans:missing.append('fan readings')
@@ -98,6 +97,15 @@ def pause_control():
     with _control_lock:
         _controlled=None;_last_percent=None
 
+def connection_wait():
+    """Quietly retain the last setting; disconnected readings never request 100%."""
+    global _pending
+    with _control_lock:
+        _pending=None
+        result={'mode':'waiting','message':'Reconnecting in background; last fan setting retained.'}
+        if _last_percent is not None:result['percent']=_last_percent
+        return result
+
 def request_fault_approval(reason,temperatures):
     """Report faults without changing cooling until the user authorizes it."""
     global _pending
@@ -125,7 +133,8 @@ def apply_control(config,temperatures,fans):
             pause_control()
             return {'mode':'paused','message':'Fan updates paused; controller retains its existing setting. Enable control to resume temperature monitoring.'}
         valid=[t['celsius'] for t in temperatures]
-        target=fan_target(config,valid) if valid and fans and all(f['value']>0 for f in fans) else None
+        if not valid or not fans:return connection_wait()
+        target=fan_target(config,valid) if all(f['value']>0 for f in fans) else None
         fault_reason=None
         if target is None:
             fault_reason='CPU readings unavailable' if not valid else 'fan readings unavailable or stopped' if not fans or any(f['value']<=0 for f in fans) else 'temperature safety limit reached'
@@ -151,7 +160,8 @@ def apply_control(config,temperatures,fans):
             elif _denied and requested>50:result['message']='Fan increase denied; manual speed limited to 50%.'
             return result
         except Exception:
-            return request_fault_approval('Fan command failed',valid)
+            if entering:_controlled=None
+            return connection_wait()
 
 def fetch_idrac(config):
     with _control_lock:

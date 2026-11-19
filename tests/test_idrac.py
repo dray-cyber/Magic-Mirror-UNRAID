@@ -57,7 +57,7 @@ class FanControlTests(unittest.TestCase):
   self.assertEqual(fan_target(DEFAULT,[48]),25)
   self.assertEqual(fan_target(DEFAULT,[80]),None)
   self.assertEqual(fan_target({**DEFAULT,'fan_gain':10},[74]),100)
- def test_sensor_failure_holds_last_speed_for_approval(self):
+ def test_sensor_loss_quietly_waits_at_last_speed(self):
   import idrac
   c={**DEFAULT,'idrac_enabled':True,'fan_control_enabled':True,'idrac_host':'192.168.1.10','idrac_user':'monitor','idrac_password':'SECRET'}
   with patch('idrac.command') as cmd:
@@ -65,14 +65,14 @@ class FanControlTests(unittest.TestCase):
    self.assertEqual(r['percent'],25)
    self.assertEqual(cmd.call_args.args[1][-1],'0x19')
    r=idrac.apply_control(c,[],[])
-   self.assertEqual(r['mode'],'error');self.assertEqual(r['percent'],25)
+   self.assertEqual(r['mode'],'waiting');self.assertEqual(r['percent'],25)
    self.assertEqual(cmd.call_count,2)
-   self.assertEqual(idrac.fan_approval()['percent'],100)
+   self.assertIsNone(idrac.fan_approval())
  def test_command_failure_never_increases_speed(self):
   import idrac
   c={**DEFAULT,'fan_control_enabled':True,'idrac_host':'192.168.1.10','idrac_user':'monitor','idrac_password':'SECRET'}
   with patch('idrac.command',side_effect=[None,RuntimeError('failure'),None]) as cmd:
-   r=idrac.apply_control(c,[{'celsius':48}],[{'value':4200}]);self.assertEqual(r['mode'],'error');self.assertEqual(cmd.call_count,2);self.assertEqual(idrac.fan_approval()['percent'],100)
+   r=idrac.apply_control(c,[{'celsius':48}],[{'value':4200}]);self.assertEqual(r['mode'],'waiting');self.assertEqual(cmd.call_count,2);self.assertIsNone(idrac.fan_approval())
  def test_disabling_preserves_hardware_setting(self):
   import idrac
   idrac._controlled=dict(DEFAULT)
@@ -109,16 +109,52 @@ class FanApprovalTests(unittest.TestCase):
    result=idrac.apply_control(self.config,[{'celsius':80}],[{'value':4200}])
    self.assertEqual(result['mode'],'error');self.assertEqual(result['percent'],50)
    self.assertEqual(command.call_count,before)
- def test_fault_pending_then_explicit_approval(self):
+ def test_disconnection_clears_popup_and_resumes_after_reconnect(self):
   import idrac
   with patch('idrac.command') as command:
-   result=idrac.apply_control(self.config,[],[])
-   command.assert_not_called();self.assertEqual(result['mode'],'error')
-   request=idrac.fan_approval();self.assertIsNone(request['cpu_c'])
-   idrac.apply_control(self.config,[],[]);command.assert_not_called()
-   idrac.decide_fan(request['id'],True)
-   self.assertEqual(idrac.apply_control(self.config,[],[])['percent'],100)
-   self.assertEqual(command.call_args.args[1],['raw','0x30','0x30','0x02','0xff','0x64'])
+   idrac.apply_control(self.config,[{'celsius':60}],[{'value':4200}])
+   self.assertIsNotNone(idrac.fan_approval())
+   before=command.call_count
+   for i in range(3):
+    result=idrac.apply_control(self.config,[],[])
+    self.assertEqual(result['mode'],'waiting');self.assertEqual(result['percent'],50)
+    self.assertIsNone(idrac.fan_approval());self.assertEqual(command.call_count,before)
+   result=idrac.apply_control(self.config,[{'celsius':48}],[{'value':4200}])
+   self.assertEqual(result['percent'],25);self.assertEqual(result['mode'],'manual')
+ def test_missing_sensors_never_increase_even_after_100_approval(self):
+  import idrac
+  with patch('idrac.command') as command:
+   idrac.apply_control(self.config,[{'celsius':80}],[{'value':4200}])
+   idrac.decide_fan(idrac.fan_approval()['id'],True)
+   before=command.call_count
+   self.assertEqual(idrac.apply_control(self.config,[],[])['mode'],'waiting')
+   self.assertEqual(command.call_count,before)
+ def test_total_telemetry_loss_sends_only_read_commands(self):
+  import idrac
+  with patch('idrac.command'):
+   idrac.apply_control(self.config,[{'celsius':48}],[{'value':4200}])
+  with patch('idrac.shutil.which',return_value='/usr/bin/ipmitool'),patch('idrac.subprocess.run',side_effect=idrac.subprocess.CalledProcessError(1,'ipmitool')) as run:
+   data,error=idrac.fetch_idrac({**self.config,'idrac_enabled':True})
+  self.assertIsNone(error);self.assertEqual(data['control']['mode'],'waiting')
+  self.assertEqual(data['control']['percent'],25);self.assertIsNone(idrac.fan_approval())
+  self.assertEqual(run.call_count,3)
+  for call in run.call_args_list:self.assertNotIn('raw',call.args[0])
+ def test_waiting_status_is_quiet_and_clears_after_reconnect(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   store=Store(tmp)
+   old={'control':{'mode':'manual','percent':25},'fan_percent':25,'temperatures':[{'celsius':48}],'kwh':10}
+   store.record('idrac','iDRAC',(old,None))
+   store.connections['idrac']['success']='2000-01-01T00:00:00+00:00'
+   store.record('idrac','iDRAC',({'control':{'mode':'waiting','percent':25}},None))
+   snapshot=store.state()
+   self.assertEqual(snapshot['idrac']['fan_percent'],25)
+   self.assertEqual(snapshot['idrac']['temperatures'],old['temperatures'])
+   self.assertTrue(snapshot['connections']['idrac']['waiting'])
+   self.assertFalse(snapshot['connections']['idrac']['stale'])
+   self.assertFalse(snapshot['connections']['idrac']['error'])
+   self.assertEqual(store.error_log,[])
+   store.record('idrac','iDRAC',(old,None))
+   self.assertFalse(store.connections['idrac'].get('waiting'))
  def test_stopped_fan_and_high_temperature_hold_last_speed(self):
   import idrac
   with patch('idrac.command') as command:
