@@ -1,8 +1,10 @@
-"""Read-only Dell iDRAC telemetry. Never sends fan-control/raw write commands."""
+"""Dell telemetry and explicitly enabled temperature-based fan control."""
 import os
 import re
 import shutil
 import subprocess
+import math
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime,timezone
 
@@ -19,8 +21,14 @@ def parse_temperatures(text):
 def parse_fans(text):
     rows=[]
     for line in text.splitlines():
-        match=re.search(r'(\d+(?:\.\d+)?)\s*(RPM|percent|%)',line,re.I)
-        if match:rows.append({'name':line.split('|')[0].strip(),'value':float(match[1]),'unit':'RPM' if match[2].upper()=='RPM' else '%'})
+        fields=[part.strip() for part in line.split('|')]
+        # Dell labels may themselves be "Fan1 RPM". Never parse the label.
+        readings=fields[1:] if len(fields)>1 else [re.sub(r'^\s*fan\s*\d+\s*(?:RPM)?\s*[:=]?\s*','',line,flags=re.I)]
+        for reading in readings:
+            match=re.fullmatch(r'(\d+(?:\.\d+)?)\s*(RPM|percent|%)',reading,re.I)
+            if match:
+                rows.append({'name':fields[0],'value':float(match[1]),'unit':'RPM' if match[2].upper()=='RPM' else '%'})
+                break
     return rows
 
 def parse_energy(text):
@@ -28,8 +36,9 @@ def parse_energy(text):
     match=re.search(r'Reading\s*:\s*([\d,.]+)\s*kWh',section[1],re.I) if section else None
     return float(match[1].replace(',','')) if match else None
 
-def fetch_idrac(config):
-    if not config['idrac_enabled']:return None,None
+def _fetch_idrac(config):
+    if not config['idrac_enabled']:
+        restore_automatic();return None,None
     binary=shutil.which('ipmitool') or shutil.which('ipmitool.exe')
     if not binary:return None,'ipmitool is unavailable. Update the container image or install ipmitool on the Python host.'
     env=os.environ.copy();env['IPMI_PASSWORD']=config['idrac_password']
@@ -46,9 +55,64 @@ def fetch_idrac(config):
     temperatures=parse_temperatures(raw['temperatures'] or '')
     fans=parse_fans(raw['fans'] or '')
     kwh=parse_energy(raw['energy'] or '')
+    control=apply_control(config,temperatures,fans)
     if not temperatures and not fans and kwh is None:return None,'Cannot read iDRAC telemetry. Check IP, credentials, IPMI-over-LAN and UDP 623 access.'
     missing=[]
     if not temperatures:missing.append('CPU temperatures')
     if not fans:missing.append('fan readings')
     if kwh is None:missing.append('cumulative kWh')
-    return dict(temperatures=temperatures,fans=fans,kwh=kwh,updated=datetime.now(timezone.utc).isoformat(),warning='Unavailable: '+', '.join(missing) if missing else ''),None
+    return dict(control=control,fan_percent=control.get('percent'),avg_fan_rpm=(sum(f['value'] for f in fans if f['unit']=='RPM')/len([f for f in fans if f['unit']=='RPM'])) if any(f['unit']=='RPM' for f in fans) else None,temperatures=temperatures,fans=fans,kwh=kwh,updated=datetime.now(timezone.utc).isoformat(),warning='Unavailable: '+', '.join(missing) if missing else ''),None
+
+
+_control_lock=threading.RLock()
+_controlled=None
+
+def command(config,args):
+    binary=shutil.which('ipmitool') or shutil.which('ipmitool.exe')
+    if not binary:raise RuntimeError('ipmitool unavailable')
+    env=os.environ.copy();env['IPMI_PASSWORD']=config['idrac_password']
+    return subprocess.run([binary,'-I','lanplus','-H',config['idrac_host'],'-U',config['idrac_user'],'-E','-N','3','-R','1']+args,env=env,shell=False,capture_output=True,text=True,timeout=8,check=True)
+
+def restore_automatic():
+    global _controlled
+    with _control_lock:
+        if _controlled is not None:
+            command(_controlled,['raw','0x30','0x30','0x01','0x01'])
+            _controlled=None
+
+def fan_target(config,temperatures):
+    maximum=max(temperatures)
+    if not math.isfinite(maximum) or maximum<0 or maximum>=config['fan_failsafe_c']:return None
+    value=config['fan_min_percent']+max(0,maximum-config['fan_target_c'])*config['fan_gain']
+    return min(100,max(config['fan_min_percent'],round(value)))
+
+def apply_control(config,temperatures,fans):
+    global _controlled
+    with _control_lock:
+        if _controlled is not None and any(config[k]!=_controlled[k] for k in ['idrac_host','idrac_user','idrac_password']):restore_automatic()
+        if not config.get('fan_control_enabled'):
+            try:restore_automatic()
+            except Exception:return {'mode':'error','message':'Could not restore automatic cooling'}
+            return {'mode':'automatic'}
+        valid=[t['celsius'] for t in temperatures]
+        target=fan_target(config,valid) if valid and fans and all(f['value']>0 for f in fans) else None
+        if target is None:
+            try:
+                # Request auto even after a restart, when previous manual ownership is unknown.
+                command(config,['raw','0x30','0x30','0x01','0x01']);_controlled=None
+                return {'mode':'automatic','message':'Automatic cooling: sensor failure, stopped fan or temperature limit'}
+            except Exception:return {'mode':'error','message':'Automatic cooling restoration failed; check server cooling immediately'}
+        try:
+            # Retain target credentials before the first write so failure recovery can restore auto.
+            _controlled=dict(config)
+            command(config,['raw','0x30','0x30','0x01','0x00'])
+            command(config,['raw','0x30','0x30','0x02','0xff',hex(target)])
+            return {'mode':'manual','percent':target}
+        except Exception:
+            try:restore_automatic()
+            except Exception:return {'mode':'error','message':'Fan command and automatic restoration failed; check server cooling immediately'}
+            return {'mode':'automatic','message':'Fan command failed; restored automatic cooling'}
+
+def fetch_idrac(config):
+    with _control_lock:
+        return _fetch_idrac(config)

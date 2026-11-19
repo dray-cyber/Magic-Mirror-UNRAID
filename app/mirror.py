@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 import webbrowser
 from portable import export_csv, parse_csv
 from aerospace import fetch_news, daily_trivia
-from idrac import fetch_idrac
+from idrac import fetch_idrac, restore_automatic
 import requests
 from services import fetch_calendar, fetch_weather, fetch_shipments, WEATHER_CODES
 
@@ -30,7 +30,7 @@ ROOT=Path(__file__).resolve().parent
 THEMES=['aurora', 'nebula', 'amber', 'ocean', 'solar', 'lunar', 'forest', 'retro']+['lcars','red-alert','mission-control','expanse','minimal','blueprint','warm-night']
 PAGES=['daily','school','workshop','calendar']
 WIDGETS=['yearprogress','daylight','mission','schoolcommute','commute','clock','upnext','weather','agenda','assignments','shipments','countdowns','notes','radar','workshop','connections','classes','sensors']
-DEFAULT=dict(version=29,idrac_enabled=False,idrac_host='',idrac_user='',idrac_password='',theme='lcars',timezone='America/Chicago',hour24=False,seconds=False,days=14,refresh=5,
+DEFAULT=dict(version=29,fan_control_enabled=False,fan_min_percent=20,fan_target_c=46,fan_gain=2.5,fan_failsafe_c=75,idrac_enabled=False,idrac_host='',idrac_user='',idrac_password='',theme='lcars',timezone='America/Chicago',hour24=False,seconds=False,days=14,refresh=5,
     layout_revision=2,layout_theme='lcars',thursday_alert=True,font_base=18,tv_mode=True,routes_enabled=False,routes_key='',school_origin='',school_destination='',commute_origin='',commute_destination='',zip_code='',units='fahrenheit',notes='Make room for a good day.',calendars=[],completed={},
     schedule_past_days=0,schedule_future_days=14,schedule_all_day=True,schedule_locations=True,assume_delivered_days=0,email_accounts=[],email_strict=True,email_blocked='',email_enabled=False,email_host='imap.gmail.com',email_user='',email_folder='INBOX',email_days=30,email_limit=100,
     auto_night=True,night_mode='sun',night_start='21:00',night_end='07:00',day_brightness=100,night_brightness=55,
@@ -50,6 +50,8 @@ def safe_url(value):
 def validate(config):
     for key in ['commute_origin','commute_destination','school_origin','school_destination','routes_key']:
         if not isinstance(config[key],str) or len(config[key])>500:raise ValueError('Use an address shorter than 500 characters.')
+    if config['fan_control_enabled'] and not config['idrac_enabled']:raise ValueError('Enable iDRAC monitoring before fan control.')
+    if not 10<=float(config['fan_min_percent'])<=100 or not 20<=float(config['fan_target_c'])<=65 or not 0.5<=float(config['fan_gain'])<=10 or not 50<=float(config['fan_failsafe_c'])<=90 or float(config['fan_failsafe_c'])<=float(config['fan_target_c']):raise ValueError('Invalid fan-control temperature or speed settings.')
     if config['idrac_enabled']:
         try:ipaddress.ip_address(config['idrac_host'])
         except ValueError:raise ValueError('Enter a valid iDRAC IP address.')
@@ -67,7 +69,7 @@ def validate(config):
     for key in ['night_start','night_end']:
         datetime.strptime(config[key],'%H:%M')
     if config['night_mode'] not in ['sun','schedule']:raise ValueError('Invalid night mode.')
-    for key in ['idrac_enabled','thursday_alert','tv_mode','routes_enabled','schedule_all_day','schedule_locations','hour24','seconds','email_enabled','auto_night','urgent_red','shift_pixels']:
+    for key in ['fan_control_enabled','idrac_enabled','thursday_alert','tv_mode','routes_enabled','schedule_all_day','schedule_locations','hour24','seconds','email_enabled','auto_night','urgent_red','shift_pixels']:
         if type(config[key]) is not bool:raise ValueError(f'{key} must be true or false.')
     if config['email_enabled'] and (not re.fullmatch(r'[\w.-]+',config['email_host']) or not config['email_user'] or '\n' in config['email_folder'] or '\r' in config['email_folder']):raise ValueError('Check the email server, username and folder.')
     if type(config['email_strict']) is not bool or not isinstance(config['email_blocked'],str):raise ValueError('Invalid shipment filters.')
@@ -424,7 +426,7 @@ class Store:
             try:
                 jobs=[];now=datetime.now(ZoneInfo(config['timezone']))
                 with ThreadPoolExecutor(max_workers=4) as pool:
-                    if config['idrac_enabled']:jobs.append(('idrac','iDRAC',pool.submit(fetch_idrac,config)))
+
                     if self.news_day!=now.date().isoformat():jobs.append(('news','Daily aerospace trivia',pool.submit(fetch_news)))
                     if config['routes_enabled'] and config['routes_key']:
                         jobs.append(('commutes','Google Routes',pool.submit(fetch_commutes,config)))
@@ -576,9 +578,26 @@ def main():
         while not stop.is_set():
             store.refresh();stop.wait(store.config['refresh']*60)
     threading.Thread(target=scheduler,daemon=True).start()
+    def hardware_monitor():
+        while not stop.is_set():
+            with store.lock:config=copy.deepcopy(store.config);generation=store.generation
+            if not store.demo:
+                try:result=fetch_idrac(config)
+                except Exception:result=(None,'iDRAC monitor failed; verify automatic cooling on the server')
+                with store.lock:
+                    if generation==store.generation and config['idrac_enabled']:
+                        store.record('idrac','iDRAC',result)
+                        if result[0] and result[0].get('control',{}).get('message'):store.log_error('iDRAC cooling',result[0]['control']['message'])
+            stop.wait(15)
+    threading.Thread(target=hardware_monitor,daemon=True).start()
     try:server.serve_forever()
     except KeyboardInterrupt:pass
-    finally:stop.set();server.server_close()
+    finally:
+        stop.set()
+        try:restore_automatic()
+        except Exception:print('WARNING: Could not restore automatic cooling. Check iDRAC.',flush=True)
+        server.server_close()
 if __name__=='__main__':main()
+
 
 

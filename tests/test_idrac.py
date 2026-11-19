@@ -39,3 +39,38 @@ class IdracTests(unittest.TestCase):
   with patch('idrac.shutil.which',return_value=None):self.assertIn('unavailable',fetch_idrac({**DEFAULT,'idrac_enabled':True})[1])
 if __name__=='__main__':unittest.main()
 
+
+
+class FanControlTests(unittest.TestCase):
+ def tearDown(self):
+  import idrac
+  idrac._controlled=None
+ def test_fan_labels_are_not_readings(self):
+  rows=parse_fans('Fan1 RPM | 30h | ok | 7.1 | 4200 RPM\nFan2 RPM | 31h | ok | 7.2 | 4400 RPM')
+  self.assertEqual([r['value'] for r in rows],[4200,4400])
+  self.assertEqual(parse_fans('Fan3 RPM | no reading'),[])
+ def test_target_and_limit(self):
+  from idrac import fan_target
+  self.assertEqual(fan_target(DEFAULT,[48]),25)
+  self.assertEqual(fan_target(DEFAULT,[80]),None)
+  self.assertEqual(fan_target({**DEFAULT,'fan_gain':10},[74]),100)
+ def test_write_percent_and_restore_on_sensor_failure(self):
+  import idrac
+  c={**DEFAULT,'idrac_enabled':True,'fan_control_enabled':True,'idrac_host':'192.168.1.10','idrac_user':'monitor','idrac_password':'SECRET'}
+  with patch('idrac.command') as cmd:
+   r=idrac.apply_control(c,[{'celsius':48}],[{'value':4200,'unit':'RPM'}])
+   self.assertEqual(r['percent'],25)
+   self.assertEqual(cmd.call_args.args[1][-1],'0x19')
+   r=idrac.apply_control(c,[],[])
+   self.assertEqual(r['mode'],'automatic');self.assertIsNone(idrac._controlled)
+   self.assertEqual(cmd.call_args.args[1],['raw','0x30','0x30','0x01','0x01'])
+ def test_command_failure_attempts_auto(self):
+  import idrac
+  c={**DEFAULT,'fan_control_enabled':True,'idrac_host':'192.168.1.10','idrac_user':'monitor','idrac_password':'SECRET'}
+  with patch('idrac.command',side_effect=[None,RuntimeError('failure'),None]) as cmd:
+   r=idrac.apply_control(c,[{'celsius':48}],[{'value':4200}]);self.assertEqual(r['mode'],'automatic');self.assertEqual(cmd.call_count,3)
+ def test_disabling_restores_auto(self):
+  import idrac
+  idrac._controlled=dict(DEFAULT)
+  with patch('idrac.command') as cmd:
+   self.assertEqual(idrac.apply_control(DEFAULT,[],[])['mode'],'automatic');cmd.assert_called_once()
