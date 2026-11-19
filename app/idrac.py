@@ -98,15 +98,14 @@ def pause_control():
     with _control_lock:
         _controlled=None;_last_percent=None
 
-def emergency_cooling(config,reason):
-    """Keep manual mode, but never hold low cooling on unsafe/missing telemetry."""
-    global _controlled,_last_percent
-    entering=_controlled is None
-    _controlled=dict(config)
-    if entering:command(config,['raw','0x30','0x30','0x01','0x00'])
-    if entering or _last_percent!=100:command(config,['raw','0x30','0x30','0x02','0xff','0x64'])
-    _last_percent=100
-    return {'mode':'manual','percent':100,'message':'Emergency manual cooling: '+reason}
+def request_fault_approval(reason,temperatures):
+    """Report faults without changing cooling until the user authorizes it."""
+    global _pending
+    if not _denied and (_pending is None or _pending['percent']<100):
+        _pending={'id':secrets.token_hex(8),'percent':100,'cpu_c':max(temperatures) if temperatures else None,'reason':reason}
+    result={'mode':'error','requested_percent':100,'message':reason+'; '+('increase denied' if _denied else 'awaiting approval')+'. Existing fan setting retained.'}
+    if _last_percent is not None:result['percent']=_last_percent
+    return result
 
 def fan_target(config,temperatures):
     maximum=max(temperatures)
@@ -127,10 +126,11 @@ def apply_control(config,temperatures,fans):
             return {'mode':'paused','message':'Fan updates paused; controller retains its existing setting. Enable control to resume temperature monitoring.'}
         valid=[t['celsius'] for t in temperatures]
         target=fan_target(config,valid) if valid and fans and all(f['value']>0 for f in fans) else None
+        fault_reason=None
         if target is None:
-            try:
-                return emergency_cooling(config,'CPU readings unavailable' if not valid else 'fan readings unavailable or stopped' if not fans or any(f['value']<=0 for f in fans) else 'temperature safety limit reached')
-            except Exception:return {'mode':'error','message':'Emergency fan command failed; check server cooling immediately'}
+            fault_reason='CPU readings unavailable' if not valid else 'fan readings unavailable or stopped' if not fans or any(f['value']<=0 for f in fans) else 'temperature safety limit reached'
+            if _approved<100 or _denied:return request_fault_approval(fault_reason,valid)
+            target=100
         requested=target
         if target<=50:
             _approved=50;_denied=False
@@ -139,19 +139,19 @@ def apply_control(config,temperatures,fans):
                 _pending={'id':secrets.token_hex(8),'percent':target,'cpu_c':max(valid)}
             target=50
         try:
-            # Retain target credentials before the first write so failure recovery can request emergency manual cooling.
+            # Retain ownership; a failed command must never trigger an unapproved increase.
             entering=_controlled is None
             _controlled=dict(config)
             if entering:command(config,['raw','0x30','0x30','0x01','0x00'])
             if entering or _last_percent!=target:command(config,['raw','0x30','0x30','0x02','0xff',hex(target)])
             _last_percent=target
             result={'mode':'manual','percent':target,'requested_percent':requested}
+            if fault_reason:result['message']=fault_reason+'; user-approved fan speed.'
             if _pending:result['message']='Fan increase awaiting approval; manual speed limited to 50%.'
             elif _denied and requested>50:result['message']='Fan increase denied; manual speed limited to 50%.'
             return result
         except Exception:
-            try:return emergency_cooling(config,'fan command failed')
-            except Exception:return {'mode':'error','message':'Fan commands failed; retained controller setting. Check server cooling immediately'}
+            return request_fault_approval('Fan command failed',valid)
 
 def fetch_idrac(config):
     with _control_lock:

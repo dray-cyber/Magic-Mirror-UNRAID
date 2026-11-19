@@ -42,6 +42,9 @@ if __name__=='__main__':unittest.main()
 
 
 class FanControlTests(unittest.TestCase):
+ def setUp(self):
+  import idrac
+  idrac._controlled=None;idrac._last_percent=None;idrac._pending=None;idrac._approved=50;idrac._denied=False;idrac._fingerprint=None
  def tearDown(self):
   import idrac
   idrac._controlled=None
@@ -54,7 +57,7 @@ class FanControlTests(unittest.TestCase):
   self.assertEqual(fan_target(DEFAULT,[48]),25)
   self.assertEqual(fan_target(DEFAULT,[80]),None)
   self.assertEqual(fan_target({**DEFAULT,'fan_gain':10},[74]),100)
- def test_sensor_failure_uses_emergency_manual_cooling(self):
+ def test_sensor_failure_holds_last_speed_for_approval(self):
   import idrac
   c={**DEFAULT,'idrac_enabled':True,'fan_control_enabled':True,'idrac_host':'192.168.1.10','idrac_user':'monitor','idrac_password':'SECRET'}
   with patch('idrac.command') as cmd:
@@ -62,13 +65,14 @@ class FanControlTests(unittest.TestCase):
    self.assertEqual(r['percent'],25)
    self.assertEqual(cmd.call_args.args[1][-1],'0x19')
    r=idrac.apply_control(c,[],[])
-   self.assertEqual(r['mode'],'manual');self.assertEqual(r['percent'],100)
-   self.assertEqual(cmd.call_args.args[1],['raw','0x30','0x30','0x02','0xff','0x64'])
- def test_command_failure_attempts_emergency_manual_cooling(self):
+   self.assertEqual(r['mode'],'error');self.assertEqual(r['percent'],25)
+   self.assertEqual(cmd.call_count,2)
+   self.assertEqual(idrac.fan_approval()['percent'],100)
+ def test_command_failure_never_increases_speed(self):
   import idrac
   c={**DEFAULT,'fan_control_enabled':True,'idrac_host':'192.168.1.10','idrac_user':'monitor','idrac_password':'SECRET'}
   with patch('idrac.command',side_effect=[None,RuntimeError('failure'),None]) as cmd:
-   r=idrac.apply_control(c,[{'celsius':48}],[{'value':4200}]);self.assertEqual(r['mode'],'manual');self.assertEqual(r['percent'],100);self.assertEqual(cmd.call_count,3)
+   r=idrac.apply_control(c,[{'celsius':48}],[{'value':4200}]);self.assertEqual(r['mode'],'error');self.assertEqual(cmd.call_count,2);self.assertEqual(idrac.fan_approval()['percent'],100)
  def test_disabling_preserves_hardware_setting(self):
   import idrac
   idrac._controlled=dict(DEFAULT)
@@ -97,12 +101,32 @@ class FanApprovalTests(unittest.TestCase):
    before=command.call_count
    self.assertEqual(idrac.apply_control(self.config,[{'celsius':60}],[{'value':4200}])['percent'],50)
    self.assertIsNone(idrac.fan_approval());self.assertEqual(command.call_count,before)
- def test_emergency_manual_cooling_not_blocked(self):
+ def test_fault_after_denial_cannot_bypass_approval(self):
   import idrac
   with patch('idrac.command') as command:
    idrac.apply_control(self.config,[{'celsius':60}],[{'value':4200}]);idrac.decide_fan(idrac.fan_approval()['id'],False)
-   self.assertEqual(idrac.apply_control(self.config,[{'celsius':80}],[{'value':4200}])['mode'],'manual')
+   before=command.call_count
+   result=idrac.apply_control(self.config,[{'celsius':80}],[{'value':4200}])
+   self.assertEqual(result['mode'],'error');self.assertEqual(result['percent'],50)
+   self.assertEqual(command.call_count,before)
+ def test_fault_pending_then_explicit_approval(self):
+  import idrac
+  with patch('idrac.command') as command:
+   result=idrac.apply_control(self.config,[],[])
+   command.assert_not_called();self.assertEqual(result['mode'],'error')
+   request=idrac.fan_approval();self.assertIsNone(request['cpu_c'])
+   idrac.apply_control(self.config,[],[]);command.assert_not_called()
+   idrac.decide_fan(request['id'],True)
+   self.assertEqual(idrac.apply_control(self.config,[],[])['percent'],100)
    self.assertEqual(command.call_args.args[1],['raw','0x30','0x30','0x02','0xff','0x64'])
+ def test_stopped_fan_and_high_temperature_hold_last_speed(self):
+  import idrac
+  with patch('idrac.command') as command:
+   idrac.apply_control(self.config,[{'celsius':48}],[{'value':4200}])
+   for temps,fans in [([{'celsius':80}],[{'value':4200}]),([{'celsius':48}],[{'value':0}])]:
+    before=command.call_count
+    self.assertEqual(idrac.apply_control(self.config,temps,fans)['percent'],25)
+    self.assertEqual(command.call_count,before)
  def test_manual_mode_enabled_once_across_speed_changes(self):
   import idrac
   with patch('idrac.command') as command:

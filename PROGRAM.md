@@ -78,13 +78,13 @@ The dashboard now includes optional Dell OEM manual fan control; enable it expli
 
 The footer shows cumulative kWh, successfully commanded fan percentage, average measured fan RPM, and CPU temperatures. Automatic mode shows Auto instead of guessing a percentage. The parser reads pipe-separated sensor values after the label, so Fan1 RPM cannot be interpreted as 1 RPM. RPM averaging uses actual RPM sensors only.
 
-On missing CPU/fan readings, a stopped fan or threshold breach, the controller requests 100% emergency cooling while retaining manual mode. Command failures attempt the same recovery. Updates, shutdowns, disabling monitoring and changing the target host do not send an automatic-mode command; the previous controller retains its hardware setting. While the app is stopped it cannot adjust fans to changing temperatures. IPMI/network failures may prevent any command from reaching the server. No commands have been tested against physical hardware.
+On missing CPU/fan readings, a stopped fan or threshold breach, the app retains the existing fan setting and requests authorization for 100%. Pending or denied requests send no fault-recovery speed command. Command failures do not trigger automatic retries at a higher speed. Updates, shutdowns, disabling monitoring and changing the target host do not send automatic-mode handoffs. Fan speeds above 50% always require user authorization; cooling faults have no exception. Server hardware protection is managed independently of this application.
 
 ## Approval for manual fan increases above 50%
 
 Manual targets above 50% create a latched Red Alert and an Approve/Deny popup. Until approved, manual commands are capped at 50%. Approval permits up to the requested percent; a higher target needs another approval. Deny keeps a 50% manual ceiling during the current high-demand episode. Once the calculated target falls to 50% or below, a future high-demand episode can ask again. Pending alerts remain until decided; host/control-setting changes reset approval state. Decisions are session memory and reset after restart.
 
-Sensor faults, stopped fans and the configured temperature safety threshold override approval with 100% emergency manual cooling. No automatic-mode handoff is sent. Repeated identical mode/speed commands are skipped; a new controller process reasserts manual mode and its freshly calculated target.
+Sensor faults, stopped fans and the configured temperature threshold use the same approval requirement. Only an approved 100% request permits that fault response; no automatic-mode handoff is sent. The last setting is retained while awaiting a decision or after denial. Hardware commands are tested with mocks only.
 
 
 ## Static styling integrity
