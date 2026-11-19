@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 import webbrowser
 from portable import export_csv, parse_csv
 from aerospace import fetch_news, daily_trivia
-from idrac import fetch_idrac, restore_automatic, fan_approval, decide_fan
+from idrac import fetch_idrac, fan_approval, decide_fan
 import requests
 from services import fetch_calendar, fetch_weather, fetch_shipments, WEATHER_CODES
 
@@ -590,7 +590,7 @@ def main():
             with store.lock:config=copy.deepcopy(store.config);generation=store.generation
             if not store.demo:
                 try:result=fetch_idrac(config)
-                except Exception:result=(None,'iDRAC monitor failed; verify automatic cooling on the server')
+                except Exception:result=(None,'iDRAC monitor failed; fan setting retained, check server cooling')
                 with store.lock:
                     if generation==store.generation and config['idrac_enabled']:
                         store.record('idrac','iDRAC',result)
@@ -601,8 +601,7 @@ def main():
     except KeyboardInterrupt:pass
     finally:
         stop.set()
-        try:restore_automatic()
-        except Exception:print('WARNING: Could not restore automatic cooling. Check iDRAC.',flush=True)
+        # Preserve the hardware manual setting across updates and shutdowns.
         server.server_close()
 if __name__=='__main__':main()
 
