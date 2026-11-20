@@ -1,0 +1,16 @@
+services:
+  magic-mirror:
+    image: magic-mirror:local
+    build: .
+    container_name: magic-mirror
+    ports:
+      - "8765:8765"
+    volumes:
+      - mirror-config:/config
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  mirror-config:

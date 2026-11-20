@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+settings.csv
+settings.json
+settings.before-import.csv
+aerospace_news.json
+*.log
+*.zip

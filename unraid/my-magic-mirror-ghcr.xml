@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>magic-mirror</Name>
+  <Repository>ghcr.io/YOUR-LOWERCASE-USERNAME/magic-mirror-unraid:latest</Repository>
+  <Registry></Registry>
+  <Network>bridge</Network>
+  <Privileged>false</Privileged>
+  <Overview>Local TV dashboard. Replace YOUR-LOWERCASE-USERNAME with your GitHub username and publish the public GHCR image before applying. Persistent settings in /config. Pairing token is printed in container logs.</Overview>
+  <WebUI>http://[IP]:[PORT:8765]/</WebUI>
+  <ExtraParams>--user 99:100 --cap-drop=ALL --security-opt=no-new-privileges:true</ExtraParams>
+  <Config Name="Web port" Target="8765" Default="8765" Mode="tcp" Description="Dashboard LAN port" Type="Port" Display="always" Required="true" Mask="false">8765</Config>
+  <Config Name="Settings" Target="/config" Default="/mnt/user/appdata/magic-mirror" Mode="rw" Description="Private settings and credentials" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/magic-mirror</Config>
+</Container>
